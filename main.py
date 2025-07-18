@@ -12,6 +12,11 @@ import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
 import numpy as np
+import tesseract
+import pytesseract
+
+# Configure tesseract to use the bundled executable
+pytesseract.pytesseract.tesseract_cmd = tesseract.executable_path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

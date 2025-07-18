@@ -2,8 +2,6 @@ fastapi==0.109.0
 uvicorn[standard]==0.25.0
 gunicorn==21.2.0
 PyMuPDF==1.23.21
-pytesseract==0.3.10
 pillow==10.2.0
 numpy==1.26.3
 python-multipart==0.0.6
-tesseract-ocr==5.3.3

@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: vector-drawing-api
+    env: python
+    buildCommand: |
+      apt-get update -qq && 
+      apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-nld libgl1-mesa-glx libglib2.0-0 poppler-utils libpoppler-cpp-dev && 
+      pip install -r requirements.txt
+    startCommand: gunicorn main:app -c config_gunicorn.py

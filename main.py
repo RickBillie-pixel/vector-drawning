@@ -10,18 +10,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 import fitz  # PyMuPDF
 from PIL import Image
-import pytesseract
 import numpy as np
-
-# Try to configure tesseract path
-try:
-    import tesseract_ocr
-    pytesseract.pytesseract.tesseract_cmd = tesseract_ocr.executable_path
-    print("Tesseract configured from tesseract_ocr package")
-except ImportError:
-    print("tesseract_ocr package not found, using system tesseract if available")
-    # Fallback - tesseract should be in PATH or disable OCR
-    pass
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -31,9 +20,6 @@ logger = logging.getLogger("merged_extraction_api")
 PORT = int(os.environ.get("PORT", 10000))
 MAX_PAGE_SIZE = 10000
 MIN_LINE_LENGTH = 0.1
-DPI_HIGH = 300
-DPI_LOW = 150
-ENABLE_OCR = os.environ.get("ENABLE_OCR", "false").lower() == "true"  # Default to false
 
 app = FastAPI(
     title="Merged Extraction API",
@@ -364,75 +350,6 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
         "polygons": polygons
     }
 
-def perform_ocr(page: fitz.Page, page_num: int, precision: int = 2) -> List[Dict]:
-    """Perform OCR on page if enabled"""
-    if not ENABLE_OCR:
-        return []
-    
-    ocr_texts = []
-    
-    try:
-        # Check if tesseract is available
-        try:
-            pytesseract.get_tesseract_version()
-        except Exception as e:
-            logger.warning(f"Tesseract not available: {e}")
-            return []
-        
-        mat = fitz.Matrix(DPI_HIGH/72, DPI_HIGH/72)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        
-        # Convert to grayscale
-        img_gray = img.convert('L')
-        
-        # Perform OCR
-        custom_config = r'--oem 3 --psm 11'
-        data = pytesseract.image_to_data(img_gray, output_type=pytesseract.Output.DICT, config=custom_config)
-        
-        # Scale factors
-        scale_x = page.rect.width / img.width
-        scale_y = page.rect.height / img.height
-        
-        for i in range(len(data['text'])):
-            text = data['text'][i].strip()
-            if text and data['conf'][i] > 20:
-                x = data['left'][i] * scale_x
-                y = data['top'][i] * scale_y
-                w = data['width'][i] * scale_x
-                h = data['height'][i] * scale_y
-                
-                text_data = {
-                    "text": text,
-                    "position": {
-                        "x": round(x, precision),
-                        "y": round(y, precision)
-                    },
-                    "bbox": {
-                        "x0": round(x, precision),
-                        "y0": round(y, precision),
-                        "x1": round(x + w, precision),
-                        "y1": round(y + h, precision),
-                        "width": round(w, precision),
-                        "height": round(h, precision)
-                    },
-                    "page_number": page_num + 1,
-                    "source": "ocr",
-                    "confidence": data['conf'][i]
-                }
-                
-                # Add dimension info if detected
-                dim_info = extract_dimension_info(text)
-                if dim_info["is_dimension"]:
-                    text_data["dimension_info"] = dim_info
-                
-                ocr_texts.append(text_data)
-    
-    except Exception as e:
-        logger.warning(f"OCR failed: {e}")
-    
-    return ocr_texts
-
 def deduplicate_texts(texts: List[Dict], tolerance: float = 10.0) -> List[Dict]:
     """Remove duplicate texts based on content and position"""
     unique_texts = []
@@ -468,13 +385,19 @@ def minify_output(data: Dict, minify: bool = True, remove_non_essential: bool = 
     
     if remove_non_essential:
         logger.info("Removing non-essential fields (fonts, colors, etc.)")
-        # Remove non-critical metadata
+        # Keep essential metadata but remove creation/modification dates
         if "metadata" in output_data:
-            critical_metadata = {
+            essential_metadata = {
                 "filename": output_data["metadata"].get("filename", ""),
-                "total_pages": output_data["summary"].get("total_pages", 0)
+                "title": output_data["metadata"].get("title", ""),
+                "author": output_data["metadata"].get("author", ""),
+                "subject": output_data["metadata"].get("subject", ""),
+                "keywords": output_data["metadata"].get("keywords", ""),
+                "creator": output_data["metadata"].get("creator", ""),
+                "producer": output_data["metadata"].get("producer", "")
+                # Skip creation_date and modification_date to save space
             }
-            output_data["metadata"] = critical_metadata
+            output_data["metadata"] = essential_metadata
         
         # Remove processing times from summary
         if "summary" in output_data:
@@ -519,14 +442,13 @@ async def extract_all(
     file: UploadFile = File(...),
     minify: bool = Query(True, description="Minify JSON output (remove whitespace)"),
     remove_non_essential: bool = Query(True, description="Remove non-essential fields (fonts, colors, etc.)"),
-    enable_ocr: bool = Query(ENABLE_OCR, description="Enable OCR processing"),
     precision: int = Query(2, ge=0, le=3, description="Decimal precision for coordinates")
 ):
     """
     Extract all data from PDF technical drawings
-    Combines text extraction, vector extraction, and OCR with configurable output minification
+    Combines text extraction and vector extraction with configurable output minification
     """
-    logger.info(f"Received request with minify={minify}, remove_non_essential={remove_non_essential}, enable_ocr={enable_ocr}, precision={precision}")
+    logger.info(f"Received request with minify={minify}, remove_non_essential={remove_non_essential}, precision={precision}")
     start_time = time.time()
     
     try:
@@ -592,11 +514,6 @@ async def extract_all(
             # 3. Form fields
             form_texts = extract_form_fields(page, page_num, precision)
             all_texts.extend(form_texts)
-            
-            # 4. OCR (if enabled)
-            if enable_ocr:
-                ocr_texts = perform_ocr(page, page_num, precision)
-                all_texts.extend(ocr_texts)
             
             # Deduplicate texts
             unique_texts = deduplicate_texts(all_texts)
@@ -667,7 +584,6 @@ async def root():
         "parameters": {
             "minify": "true/false (remove whitespace)",
             "remove_non_essential": "true/false (remove fonts, colors, etc.)",
-            "enable_ocr": "true/false (enable OCR processing)",
             "precision": "0-3 (decimal places for coordinates)"
         }
     }
@@ -678,8 +594,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.0",
-        "ocr_enabled": ENABLE_OCR
+        "version": "1.0.0"
     }
 
 if __name__ == "__main__":

@@ -12,11 +12,16 @@ import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
 import numpy as np
-import tesseract
-import pytesseract
 
-# Configure tesseract to use the bundled executable
-pytesseract.pytesseract.tesseract_cmd = tesseract.executable_path
+# Try to configure tesseract path
+try:
+    import tesseract_ocr
+    pytesseract.pytesseract.tesseract_cmd = tesseract_ocr.executable_path
+    print("Tesseract configured from tesseract_ocr package")
+except ImportError:
+    print("tesseract_ocr package not found, using system tesseract if available")
+    # Fallback - tesseract should be in PATH or disable OCR
+    pass
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -28,7 +33,7 @@ MAX_PAGE_SIZE = 10000
 MIN_LINE_LENGTH = 0.1
 DPI_HIGH = 300
 DPI_LOW = 150
-ENABLE_OCR = os.environ.get("ENABLE_OCR", "true").lower() == "true"
+ENABLE_OCR = os.environ.get("ENABLE_OCR", "false").lower() == "true"  # Default to false
 
 app = FastAPI(
     title="Merged Extraction API",
@@ -367,6 +372,13 @@ def perform_ocr(page: fitz.Page, page_num: int, precision: int = 2) -> List[Dict
     ocr_texts = []
     
     try:
+        # Check if tesseract is available
+        try:
+            pytesseract.get_tesseract_version()
+        except Exception as e:
+            logger.warning(f"Tesseract not available: {e}")
+            return []
+        
         mat = fitz.Matrix(DPI_HIGH/72, DPI_HIGH/72)
         pix = page.get_pixmap(matrix=mat, alpha=False)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)

@@ -6,4 +6,4 @@ pytesseract==0.3.10
 pillow==10.2.0
 numpy==1.26.3
 python-multipart==0.0.6
-tesseract==0.1.3
+tesseract-ocr==5.3.3

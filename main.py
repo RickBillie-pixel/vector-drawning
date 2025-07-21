@@ -23,8 +23,8 @@ MIN_LINE_LENGTH = 0.1
 
 app = FastAPI(
     title="Merged Extraction API",
-    description="Extracts all text and vector data from technical drawings with minification, coordinate info, and page dimensions",
-    version="1.0.1",
+    description="Extracts all text and vector data from technical drawings with minification and coordinate info",
+    version="1.0.0",
 )
 
 # Add GZip middleware for automatic compression if client supports it
@@ -41,11 +41,23 @@ class MyPdfModel:
     def _calculate_page_dimensions(self) -> List[Dict]:
         """Calculate dimensions for each page"""
         pages_info = []
+        
         for page_num in range(len(self.pdf_document)):
             page = self.pdf_document[page_num]
             rect = page.rect
+            
+            # Page dimensions in points (PDF native)
             page_width = rect.width
             page_height = rect.height
+            
+            # Convert to pixels (assuming 150 DPI)
+            page_width_pixels = int((page_width * 150) / 72)
+            page_height_pixels = int((page_height * 150) / 72)
+            
+            # Convert to millimeters
+            page_width_mm = page_width * 0.352778
+            page_height_mm = page_height * 0.352778
+            
             page_info = {
                 "page_number": page_num + 1,
                 "dimensions_points": {
@@ -57,26 +69,30 @@ class MyPdfModel:
                     "y1": round(rect.y1, 2)
                 },
                 "dimensions_pixels": {
-                    "width": int((page_width * 150) / 72),
-                    "height": int((page_height * 150) / 72),
+                    "width": page_width_pixels,
+                    "height": page_height_pixels,
                     "dpi": 150
                 },
                 "dimensions_mm": {
-                    "width": round(page_width * 0.352778, 2),
-                    "height": round(page_height * 0.352778, 2)
+                    "width": round(page_width_mm, 2),
+                    "height": round(page_height_mm, 2)
                 }
             }
+            
             pages_info.append(page_info)
+        
         return pages_info
     
     def _calculate_total_dimensions(self) -> Dict:
         """Calculate total PDF dimensions"""
         if not self.page_dimensions:
             return {}
+        
         total_width_points = sum(p["dimensions_points"]["width"] for p in self.page_dimensions)
         total_height_points = sum(p["dimensions_points"]["height"] for p in self.page_dimensions)
         max_width_points = max(p["dimensions_points"]["width"] for p in self.page_dimensions)
         max_height_points = max(p["dimensions_points"]["height"] for p in self.page_dimensions)
+        
         return {
             "total_pages": len(self.page_dimensions),
             "total_width_points": round(total_width_points, 2),
@@ -93,10 +109,12 @@ class MyPdfModel:
             "max_height_mm": round(max_height_points * 0.352778, 2)
         }
 
-# Shared utility functions (unchanged)
+# Shared utility functions (keeping original functionality)
 def point_to_dict(p, precision: int = 2) -> dict:
+    """Convert point to dictionary with configurable precision"""
     if p is None:
         return {"x": 0.0, "y": 0.0}
+    
     try:
         if hasattr(p, 'x') and hasattr(p, 'y'):
             return {"x": round(float(p.x), precision), "y": round(float(p.y), precision)}
@@ -105,35 +123,57 @@ def point_to_dict(p, precision: int = 2) -> dict:
         else:
             return {"x": 0.0, "y": 0.0}
     except (ValueError, TypeError, AttributeError):
-        return {"x": 0.0, "y": 0.0"}
+        return {"x": 0.0, "y": 0.0}
 
 def rect_to_dict(r, precision: int = 2) -> dict:
+    """Convert rectangle to dictionary with configurable precision"""
     if r is None:
-        return {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0, "width": 0.0, "height": 0.0}
+        return {
+            "x0": 0.0, "y0": 0.0,
+            "x1": 0.0, "y1": 0.0,
+            "width": 0.0, "height": 0.0
+        }
+    
     try:
         if isinstance(r, tuple) and len(r) >= 4:
             return {
-                "x0": round(float(r[0]), precision), "y0": round(float(r[1]), precision),
-                "x1": round(float(r[2]), precision), "y1": round(float(r[3]), precision),
+                "x0": round(float(r[0]), precision),
+                "y0": round(float(r[1]), precision),
+                "x1": round(float(r[2]), precision),
+                "y1": round(float(r[3]), precision),
                 "width": round(float(r[2]) - float(r[0]), precision),
                 "height": round(float(r[3]) - float(r[1]), precision)
             }
         elif hasattr(r, 'x0'):
             return {
-                "x0": round(float(r.x0), precision), "y0": round(float(r.y0), precision),
-                "x1": round(float(r.x1), precision), "y1": round(float(r.y1), precision),
-                "width": round(float(r.width), precision), "height": round(float(r.height), precision)
+                "x0": round(float(r.x0), precision),
+                "y0": round(float(r.y0), precision),
+                "x1": round(float(r.x1), precision),
+                "y1": round(float(r.y1), precision),
+                "width": round(float(r.width), precision),
+                "height": round(float(r.height), precision)
             }
         else:
-            return {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0, "width": 0.0, "height": 0.0}
+            return {
+                "x0": 0.0, "y0": 0.0,
+                "x1": 0.0, "y1": 0.0,
+                "width": 0.0, "height": 0.0
+            }
     except (ValueError, TypeError, AttributeError):
-        return {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0, "width": 0.0, "height": 0.0"}
+        return {
+            "x0": 0.0, "y0": 0.0,
+            "x1": 0.0, "y1": 0.0,
+            "width": 0.0, "height": 0.0
+        }
 
 def distance(p1: dict, p2: dict) -> float:
+    """Calculate distance between two points"""
     return math.sqrt((p2['x'] - p1['x'])**2 + (p2['y'] - p1['y'])**2)
 
 def extract_dimension_info(text: str) -> Dict[str, Any]:
+    """Extract dimension information from text"""
     dimension_data = {"is_dimension": False, "value": None, "unit": None, "type": None}
+    
     patterns = [
         (r'^(\d+)$', 'numeric'),
         (r'(\d+(?:\.\d+)?)\s*(mm|cm|m|ft|in|")', 'measurement'),
@@ -144,6 +184,7 @@ def extract_dimension_info(text: str) -> Dict[str, Any]:
         (r'(\d+)\s*:\s*(\d+)', 'scale'),
         (r'±\s*(\d+(?:\.\d+)?)', 'tolerance'),
     ]
+    
     for pattern, dim_type in patterns:
         match = re.search(pattern, text.strip())
         if match:
@@ -153,9 +194,11 @@ def extract_dimension_info(text: str) -> Dict[str, Any]:
             if len(match.groups()) > 1:
                 dimension_data["unit"] = match.group(2)
             break
+    
     return dimension_data
 
 def extract_path_data(path: dict, precision: int = 2) -> Dict[str, Any]:
+    """Extract path data with configurable precision"""
     width = path.get("width", 1.0)
     if width is None:
         width = 1.0
@@ -164,6 +207,7 @@ def extract_path_data(path: dict, precision: int = 2) -> Dict[str, Any]:
             width = float(width)
         except (ValueError, TypeError):
             width = 1.0
+    
     opacity = path.get("opacity", 1.0)
     if opacity is None:
         opacity = 1.0
@@ -172,22 +216,29 @@ def extract_path_data(path: dict, precision: int = 2) -> Dict[str, Any]:
             opacity = float(opacity)
         except (ValueError, TypeError):
             opacity = 1.0
+    
     path_data = {
         "width": round(width, precision),
         "opacity": round(opacity, precision),
         "closePath": path.get("closePath", False),
     }
+    
+    # Include colors only if present
     if "color" in path and path["color"]:
         try:
             path_data["color"] = [round(float(c), 3) for c in path["color"]]
         except:
             pass
+    
     return path_data
 
 def extract_embedded_text(page: fitz.Page, page_num: int, precision: int = 2) -> List[Dict]:
+    """Extract embedded text from PDF"""
     embedded_texts = []
+    
     try:
         text_dict = page.get_text("dict")
+        
         for block in text_dict.get("blocks", []):
             if "lines" in block:
                 for line in block["lines"]:
@@ -195,12 +246,17 @@ def extract_embedded_text(page: fitz.Page, page_num: int, precision: int = 2) ->
                         text = span["text"].strip()
                         if text:
                             bbox = span["bbox"]
+                            
                             text_data = {
                                 "text": text,
-                                "position": {"x": round(bbox[0], precision), "y": round(bbox[1], precision)},
+                                "position": {
+                                    "x": round(bbox[0], precision),
+                                    "y": round(bbox[1], precision)
+                                },
                                 "bbox": rect_to_dict(bbox, precision),
                                 "page_number": page_num + 1,
                                 "source": "embedded",
+                                # NEW: Add coordinates for filter API
                                 "coordinates": {
                                     "x": round(bbox[0], precision),
                                     "y": round(bbox[1], precision),
@@ -208,16 +264,23 @@ def extract_embedded_text(page: fitz.Page, page_num: int, precision: int = 2) ->
                                     "center_y": round((bbox[1] + bbox[3]) / 2, precision)
                                 }
                             }
+                            
+                            # Add dimension info if detected
                             dim_info = extract_dimension_info(text)
                             if dim_info["is_dimension"]:
                                 text_data["dimension_info"] = dim_info
+                            
                             embedded_texts.append(text_data)
+    
     except Exception as e:
         logger.warning(f"Failed to extract embedded text: {e}")
+    
     return embedded_texts
 
 def extract_annotations(page: fitz.Page, page_num: int, precision: int = 2) -> List[Dict]:
+    """Extract annotations from PDF"""
     annotation_texts = []
+    
     try:
         for annot in page.annots():
             if annot:
@@ -227,14 +290,20 @@ def extract_annotations(page: fitz.Page, page_num: int, precision: int = 2) -> L
                         content = annot.get_text()
                     except:
                         pass
+                
                 if content and content.strip():
                     rect = annot.rect
+                    
                     text_data = {
                         "text": content.strip(),
-                        "position": {"x": round(rect.x0, precision), "y": round(rect.y0, precision)},
+                        "position": {
+                            "x": round(rect.x0, precision),
+                            "y": round(rect.y0, precision)
+                        },
                         "bbox": rect_to_dict(rect, precision),
                         "page_number": page_num + 1,
                         "source": "annotation",
+                        # NEW: Add coordinates for filter API
                         "coordinates": {
                             "x": round(rect.x0, precision),
                             "y": round(rect.y0, precision),
@@ -242,16 +311,23 @@ def extract_annotations(page: fitz.Page, page_num: int, precision: int = 2) -> L
                             "center_y": round((rect.y0 + rect.y1) / 2, precision)
                         }
                     }
+                    
+                    # Add dimension info if detected
                     dim_info = extract_dimension_info(content)
                     if dim_info["is_dimension"]:
                         text_data["dimension_info"] = dim_info
+                    
                     annotation_texts.append(text_data)
+    
     except Exception as e:
         logger.warning(f"Failed to extract annotations: {e}")
+    
     return annotation_texts
 
 def extract_form_fields(page: fitz.Page, page_num: int, precision: int = 2) -> List[Dict]:
+    """Extract form fields from PDF"""
     fields = []
+    
     try:
         widgets = page.widgets()
         if widgets:
@@ -260,10 +336,14 @@ def extract_form_fields(page: fitz.Page, page_num: int, precision: int = 2) -> L
                 if text and text.strip():
                     field_data = {
                         "text": text.strip(),
-                        "position": {"x": round(widget.rect.x0, precision), "y": round(widget.rect.y0, precision)},
+                        "position": {
+                            "x": round(widget.rect.x0, precision),
+                            "y": round(widget.rect.y0, precision)
+                        },
                         "bbox": rect_to_dict(widget.rect, precision),
                         "page_number": page_num + 1,
                         "source": "form_field",
+                        # NEW: Add coordinates for filter API
                         "coordinates": {
                             "x": round(widget.rect.x0, precision),
                             "y": round(widget.rect.y0, precision),
@@ -271,27 +351,36 @@ def extract_form_fields(page: fitz.Page, page_num: int, precision: int = 2) -> L
                             "center_y": round((widget.rect.y0 + widget.rect.y1) / 2, precision)
                         }
                     }
+                    
+                    # Add dimension info if detected
                     dim_info = extract_dimension_info(text)
                     if dim_info["is_dimension"]:
                         field_data["dimension_info"] = dim_info
+                    
                     fields.append(field_data)
+    
     except Exception as e:
         logger.warning(f"Error extracting form fields: {e}")
+    
     return fields
 
 def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
+    """Extract vector drawings from page"""
     lines = []
     rectangles = []
     curves = []
     polygons = []
+    
     try:
         drawings = page.get_drawings()
         for path in drawings:
             path_info = extract_path_data(path, precision)
+            
             for item in path["items"]:
                 item_type = item[0]
                 points = item[1:] if len(item) > 1 else []
-                if item_type == "l" and len(points) >= 2:
+                
+                if item_type == "l" and len(points) >= 2:  # Line
                     p1 = point_to_dict(points[0], precision)
                     p2 = point_to_dict(points[1], precision)
                     line_length = distance(p1, p2)
@@ -301,6 +390,7 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                             "p1": p1,
                             "p2": p2,
                             "length": round(line_length, precision),
+                            # NEW: Add coordinates for filter API
                             "coordinates": {
                                 "start_x": p1["x"],
                                 "start_y": p1["y"],
@@ -312,7 +402,8 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                             **path_info
                         }
                         lines.append(line_data)
-                elif item_type == "re" and points:
+                
+                elif item_type == "re" and points:  # Rectangle
                     rect = rect_to_dict(points[0], precision)
                     rect_area = rect["width"] * rect["height"]
                     if rect_area >= 1:
@@ -320,6 +411,7 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                             "type": "rectangle",
                             "rect": rect,
                             "area": round(rect_area, precision),
+                            # NEW: Add coordinates for filter API
                             "coordinates": {
                                 "x": rect["x0"],
                                 "y": rect["y0"],
@@ -331,15 +423,19 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                             **path_info
                         }
                         rectangles.append(rect_data)
-                elif item_type == "c" and points:
+                
+                elif item_type == "c" and points:  # Curve/Circle
                     try:
                         if len(points) >= 4:
                             curve_points = [point_to_dict(p, precision) for p in points[:4]]
+                            # Calculate center point for curves
                             center_x = sum(p["x"] for p in curve_points) / len(curve_points)
                             center_y = sum(p["y"] for p in curve_points) / len(curve_points)
+                            
                             curve_data = {
                                 "type": "bezier",
                                 "points": curve_points,
+                                # NEW: Add coordinates for filter API
                                 "coordinates": {
                                     "center_x": round(center_x, precision),
                                     "center_y": round(center_y, precision),
@@ -349,11 +445,17 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                             }
                         else:
                             center = point_to_dict(points[0], precision)
-                            radius = float(points[1]) if len(points) > 1 and points[1] is not None else 1.0
+                            radius = 1.0
+                            if len(points) > 1 and points[1] is not None:
+                                try:
+                                    radius = float(points[1])
+                                except:
+                                    radius = 1.0
                             curve_data = {
                                 "type": "circle",
                                 "center": center,
                                 "radius": round(radius, precision),
+                                # NEW: Add coordinates for filter API
                                 "coordinates": {
                                     "center_x": center["x"],
                                     "center_y": center["y"],
@@ -368,13 +470,17 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                         curves.append(curve_data)
                     except Exception as e:
                         logger.warning(f"Error processing curve: {e}")
-                elif item_type == "qu" and len(points) >= 3:
+                
+                elif item_type == "qu" and len(points) >= 3:  # Polygon
                     polygon_points = [point_to_dict(p, precision) for p in points]
+                    # Calculate center point for polygon
                     center_x = sum(p["x"] for p in polygon_points) / len(polygon_points)
                     center_y = sum(p["y"] for p in polygon_points) / len(polygon_points)
+                    
                     polygon_data = {
                         "type": "polygon",
                         "points": polygon_points,
+                        # NEW: Add coordinates for filter API
                         "coordinates": {
                             "center_x": round(center_x, precision),
                             "center_y": round(center_y, precision),
@@ -384,43 +490,67 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                         **path_info
                     }
                     polygons.append(polygon_data)
+    
     except Exception as e:
         logger.warning(f"Error extracting vector data: {e}")
-    return {"lines": lines, "rectangles": rectangles, "curves": curves, "polygons": polygons}
+    
+    return {
+        "lines": lines,
+        "rectangles": rectangles,
+        "curves": curves,
+        "polygons": polygons
+    }
 
 def deduplicate_texts(texts: List[Dict], tolerance: float = 10.0) -> List[Dict]:
+    """Remove duplicate texts based on content and position"""
     unique_texts = []
     seen = set()
+    
     for text in texts:
+        # Create a key based on text and approximate position
         text_key = f"{text['text'].lower()}_{round(text['position']['x']/tolerance)}_{round(text['position']['y']/tolerance)}"
+        
         if text_key not in seen:
             seen.add(text_key)
             unique_texts.append(text)
+    
     return unique_texts
 
 def calculate_coordinate_bounds(data: Dict) -> Dict[str, Any]:
+    """Calculate actual min/max coordinates from extracted data"""
     all_x_coords = []
     all_y_coords = []
+    
     for page in data.get("pages", []):
+        # Collect coordinates from texts
         for text in page.get("texts", []):
             if "coordinates" in text:
                 all_x_coords.extend([text["coordinates"]["x"], text["coordinates"]["center_x"]])
                 all_y_coords.extend([text["coordinates"]["y"], text["coordinates"]["center_y"]])
+            # Also from bbox
             if "bbox" in text:
                 bbox = text["bbox"]
                 all_x_coords.extend([bbox["x0"], bbox["x1"]])
                 all_y_coords.extend([bbox["y0"], bbox["y1"]])
+        
+        # Collect coordinates from drawings
         drawings = page.get("drawings", {})
+        
+        # Lines
         for line in drawings.get("lines", []):
             if "coordinates" in line:
                 coords = line["coordinates"]
                 all_x_coords.extend([coords["start_x"], coords["end_x"], coords["center_x"]])
                 all_y_coords.extend([coords["start_y"], coords["end_y"], coords["center_y"]])
+        
+        # Rectangles
         for rect in drawings.get("rectangles", []):
             if "coordinates" in rect:
                 coords = rect["coordinates"]
                 all_x_coords.extend([coords["x"], coords["center_x"], coords["x"] + coords["width"]])
                 all_y_coords.extend([coords["y"], coords["center_y"], coords["y"] + coords["height"]])
+        
+        # Curves/Circles
         for curve in drawings.get("curves", []):
             if "coordinates" in curve:
                 coords = curve["coordinates"]
@@ -429,6 +559,8 @@ def calculate_coordinate_bounds(data: Dict) -> Dict[str, Any]:
                 if "bounds_x0" in coords:
                     all_x_coords.extend([coords["bounds_x0"], coords["bounds_x1"]])
                     all_y_coords.extend([coords["bounds_y0"], coords["bounds_y1"]])
+        
+        # Polygons
         for polygon in drawings.get("polygons", []):
             if "coordinates" in polygon:
                 coords = polygon["coordinates"]
@@ -437,6 +569,7 @@ def calculate_coordinate_bounds(data: Dict) -> Dict[str, Any]:
                 for vertex in coords.get("vertices", []):
                     all_x_coords.append(vertex["x"])
                     all_y_coords.append(vertex["y"])
+    
     if all_x_coords and all_y_coords:
         return {
             "coordinate_bounds": {
@@ -449,11 +582,40 @@ def calculate_coordinate_bounds(data: Dict) -> Dict[str, Any]:
                 "total_elements": len(all_x_coords)
             }
         }
-    return {"coordinate_bounds": {"min_x": 0.0, "max_x": 0.0, "min_y": 0.0, "max_y": 0.0, "width": 0.0, "height": 0.0, "total_elements": 0}}
+    else:
+        return {
+            "coordinate_bounds": {
+                "min_x": 0.0,
+                "max_x": 0.0,
+                "min_y": 0.0,
+                "max_y": 0.0,
+                "width": 0.0,
+                "height": 0.0,
+                "total_elements": 0
+            }
+        }
 
 def minify_output(data: Dict, minify: bool = True, remove_non_essential: bool = True) -> str:
+    """
+    Minify JSON output to a single-line string, removing all whitespace.
+    Optionally removes non-essential fields (fonts, colors, etc.).
+    
+    Args:
+        data (Dict): The JSON data to minify.
+        minify (bool): If True, produce single-line JSON (no whitespace).
+        remove_non_essential (bool): If True, remove fonts, colors, etc.
+    
+    Returns:
+        str: Minified JSON string.
+    """
+    logger.info(f"Minifying output, minify={minify}, remove_non_essential={remove_non_essential}")
+    
+    # Make a copy to avoid modifying original data
     output_data = data.copy()
+    
     if remove_non_essential:
+        logger.info("Removing non-essential fields (fonts, colors, etc.)")
+        # Keep essential metadata but remove creation/modification dates
         if "metadata" in output_data:
             essential_metadata = {
                 "filename": output_data["metadata"].get("filename", ""),
@@ -463,32 +625,50 @@ def minify_output(data: Dict, minify: bool = True, remove_non_essential: bool = 
                 "keywords": output_data["metadata"].get("keywords", ""),
                 "creator": output_data["metadata"].get("creator", ""),
                 "producer": output_data["metadata"].get("producer", ""),
+                # NEW: Keep PDF dimensions for filter API
                 "pdf_dimensions": output_data["metadata"].get("pdf_dimensions", {}),
                 "page_dimensions": output_data["metadata"].get("page_dimensions", [])
+                # Skip creation_date and modification_date to save space
             }
             output_data["metadata"] = essential_metadata
+        
+        # Keep coordinate bounds in summary (important for filtering!)
         if "summary" in output_data:
+            # Remove processing times but keep coordinate bounds
             output_data["summary"].pop("processing_time_ms", None)
             output_data["summary"].pop("file_size_mb", None)
+            # Keep coordinate_bounds for filter API!
+        
+        # Remove non-essential fields from pages
         for page in output_data.get("pages", []):
             page.pop("processing_time_ms", None)
             page.pop("fonts", None)
             page.pop("layers", None)
+            
+            # Remove from texts (but keep coordinates!)
             for text in page.get("texts", []):
-                text.pop("font", None)
-                text.pop("color", None)
+                text.pop("font", None)      # Remove fonts
+                text.pop("color", None)     # Remove colors
                 text.pop("flags", None)
                 text.pop("size", None)
                 text.pop("confidence", None)
+                # Keep coordinates field for filter API
+            
+            # Remove from drawings (but keep coordinates!)
             for drawing_type in ["lines", "rectangles", "curves", "polygons"]:
                 for item in page.get("drawings", {}).get(drawing_type, []):
-                    item.pop("color", None)
+                    item.pop("color", None)  # Remove colors
                     item.pop("opacity", None)
                     item.pop("dashes", None)
+                    # Keep coordinates field for filter API
+    
+    # Serialize
     try:
         if minify:
+            logger.info("Producing compact JSON (no whitespace)")
             return json.dumps(output_data, separators=(',', ':'), ensure_ascii=False)
         else:
+            logger.info("Producing indented JSON")
             return json.dumps(output_data, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Error during JSON serialization: {e}")
@@ -501,11 +681,18 @@ async def extract_all(
     remove_non_essential: bool = Query(True, description="Remove non-essential fields (fonts, colors, etc.)"),
     precision: int = Query(2, ge=0, le=3, description="Decimal precision for coordinates")
 ):
+    """
+    Extract all data from PDF technical drawings
+    Combines text extraction and vector extraction with configurable output minification
+    NOW WITH: Enhanced coordinate information for filter API usage
+    """
     logger.info(f"Received request with minify={minify}, remove_non_essential={remove_non_essential}, precision={precision}")
     start_time = time.time()
     
     try:
         logger.info(f"Extracting data from: {file.filename}")
+        
+        # Read PDF
         pdf_bytes = await file.read()
         if not pdf_bytes:
             raise ValueError("Empty PDF file")
@@ -515,9 +702,13 @@ async def extract_all(
             raise ValueError("PDF contains no pages")
         
         logger.info(f"PDF loaded: {len(pdf_document)} pages, {len(pdf_bytes)/1024:.1f} KB")
+        
+        # NEW: Initialize MyPdfModel to get real dimensions
         pdf_model = MyPdfModel(pdf_document)
         
+        # Extract metadata
         metadata = pdf_document.metadata
+        
         output = {
             "metadata": {
                 "filename": file.filename,
@@ -529,6 +720,7 @@ async def extract_all(
                 "producer": metadata.get("producer", ""),
                 "creation_date": metadata.get("creationDate", ""),
                 "modification_date": metadata.get("modDate", ""),
+                # NEW: Add PDF dimensions for filter API
                 "pdf_dimensions": pdf_model.total_dimensions,
                 "page_dimensions": pdf_model.page_dimensions
             },
@@ -543,42 +735,61 @@ async def extract_all(
                 "dimensions_found": 0,
                 "file_size_mb": round(len(pdf_bytes) / (1024 * 1024), 2),
                 "processing_time_ms": 0,
+                # NEW: Add coordinate system info
                 "coordinate_system": "pdf_points_with_filter_coords"
             }
         }
         
+        # Process each page
         for page_num in range(len(pdf_document)):
             page_start = time.time()
             page = pdf_document[page_num]
             logger.info(f"Processing page {page_num + 1} of {len(pdf_document)}")
             
+            # Extract all text types
             all_texts = []
+            
+            # 1. Embedded text
             embedded_texts = extract_embedded_text(page, page_num, precision)
             all_texts.extend(embedded_texts)
+            
+            # 2. Annotations
             annotation_texts = extract_annotations(page, page_num, precision)
             all_texts.extend(annotation_texts)
+            
+            # 3. Form fields
             form_texts = extract_form_fields(page, page_num, precision)
             all_texts.extend(form_texts)
             
+            # Deduplicate texts
             unique_texts = deduplicate_texts(all_texts)
+            
+            # Sort by position
             unique_texts.sort(key=lambda x: (x["position"]["y"], x["position"]["x"]))
             
+            # Extract vector data
             vector_data = extract_vector_data(page, precision)
+            
+            # Count dimensions
             dimensions_count = sum(1 for t in unique_texts if t.get("dimension_info", {}).get("is_dimension", False))
             
+            # Build page data
             page_data = {
                 "page_number": page_num + 1,
                 "page_size": {
                     "width": round(page.rect.width, precision),
                     "height": round(page.rect.height, precision)
                 },
-                "page_dimensions": pdf_model.page_dimensions[page_num],
+                # NEW: Add page dimensions from MyPdfModel
+                "page_dimensions": pdf_model.page_dimensions[page_num] if page_num < len(pdf_model.page_dimensions) else {},
                 "texts": unique_texts,
                 "drawings": vector_data,
                 "processing_time_ms": int((time.time() - page_start) * 1000)
             }
+            
             output["pages"].append(page_data)
             
+            # Update summary
             output["summary"]["total_texts"] += len(unique_texts)
             output["summary"]["total_lines"] += len(vector_data["lines"])
             output["summary"]["total_rectangles"] += len(vector_data["rectangles"])
@@ -587,7 +798,10 @@ async def extract_all(
             output["summary"]["dimensions_found"] += dimensions_count
         
         pdf_document.close()
+        
         output["summary"]["processing_time_ms"] = int((time.time() - start_time) * 1000)
+        
+        # NEW: Calculate actual coordinate bounds from extracted data
         coordinate_bounds = calculate_coordinate_bounds(output)
         output["summary"].update(coordinate_bounds)
         
@@ -596,6 +810,7 @@ async def extract_all(
         logger.info(f"PDF total dimensions: {pdf_model.total_dimensions}")
         logger.info(f"Actual coordinate bounds: {coordinate_bounds['coordinate_bounds']}")
         
+        # Minify and filter output
         return minify_output(output, minify, remove_non_essential)
     
     except Exception as e:
@@ -610,10 +825,11 @@ async def extract_all(
 
 @app.get("/")
 async def root():
+    """Root endpoint with API information"""
     return {
         "message": "Merged Extraction API with Enhanced Coordinates",
-        "version": "1.0.1",
-        "description": "Extracts text and vector data from technical drawings with minification, coordinate info, and page dimensions for filter API",
+        "version": "1.0.0",
+        "description": "Extracts text and vector data from technical drawings with minification and coordinate info for filter API",
         "endpoints": {
             "/": "This page",
             "/extract/": "POST - Extract all data from PDF with coordinates",
@@ -629,7 +845,7 @@ async def root():
             "pdf_dimensions": "Real PDF dimensions in points, pixels, and millimeters",
             "page_dimensions": "Individual page dimensions for each page",
             "coordinate_bounds": "Actual min/max X,Y coordinates from extracted data",
-            "page_size": "Consistent page_size field for each page"
+            "filter_ready": "Output optimized for coordinate-based filtering"
         },
         "coordinate_fields": {
             "texts": "coordinates.x, coordinates.y, coordinates.center_x, coordinates.center_y",
@@ -642,21 +858,21 @@ async def root():
 
 @app.get("/health/")
 async def health_check():
+    """Health check endpoint"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.1",
+        "version": "1.0.0",
         "features": [
             "Original functionality preserved",
             "Enhanced with coordinate information",
             "PDF dimension extraction",
-            "Filter API ready output",
-            "Consistent page_size and coordinate_bounds"
+            "Filter API ready output"
         ]
     }
 
 if __name__ == "__main__":
     import uvicorn
     logger.info(f"Starting server on port {PORT}")
-    logger.info("Enhanced with coordinate information and page dimensions for filter API usage")
+    logger.info("Enhanced with coordinate information for filter API usage")
     uvicorn.run(app, host="0.0.0.0", port=PORT)

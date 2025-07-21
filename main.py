@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 import fitz  # PyMuPDF
+import numpy as np
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -138,15 +139,15 @@ def extract_dimension_info(text: str) -> Dict[str, Any]:
             dimension_data["type"] = dim_type
             if len(match.groups()) > 1:
                 dimension_data["unit"] = match.group(2)
-            return dimension_data  # Early return for efficiency
+            return dimension_data
     return dimension_data
 
 def extract_path_data(path: dict, precision: int = 2) -> Dict[str, Any]:
-    width = path.get("width", 1.0)
-    opacity = path.get("opacity", 1.0)
+    width = float(path.get("width", 1.0))
+    opacity = float(path.get("opacity", 1.0))
     path_data = {
-        "width": round(float(width), precision),
-        "opacity": round(float(opacity), precision),
+        "width": round(width, precision),
+        "opacity": round(opacity, precision),
         "closePath": path.get("closePath", False),
     }
     if "color" in path and path["color"]:
@@ -169,7 +170,7 @@ def extract_embedded_text(page: fitz.Page, page_num: int, precision: int = 2) ->
                             bbox = span["bbox"]
                             text_data = {
                                 "text": text,
-                                "position": {"x": round(bbox[0], precision), "y": round(bbox[1], precision)},
+                                "position": point_to_dict(bbox[:2], precision),
                                 "bbox": rect_to_dict(bbox, precision),
                                 "page_number": page_num + 1,
                                 "source": "embedded",
@@ -191,33 +192,32 @@ def extract_embedded_text(page: fitz.Page, page_num: int, precision: int = 2) ->
 def extract_annotations(page: fitz.Page, page_num: int, precision: int = 2) -> List[Dict]:
     annotation_texts = []
     try:
-        for annot in page.annots():
-            if annot:
-                content = annot.info.get("content", "")
-                if not content and hasattr(annot, "get_text"):
-                    try:
-                        content = annot.get_text()
-                    except:
-                        pass
-                if content and content.strip():
-                    rect = annot.rect
-                    text_data = {
-                        "text": content.strip(),
-                        "position": {"x": round(rect.x0, precision), "y": round(rect.y0, precision)},
-                        "bbox": rect_to_dict(rect, precision),
-                        "page_number": page_num + 1,
-                        "source": "annotation",
-                        "coordinates": {
-                            "x": round(rect.x0, precision),
-                            "y": round(rect.y0, precision),
-                            "center_x": round((rect.x0 + rect.x1) / 2, precision),
-                            "center_y": round((rect.y0 + rect.y1) / 2, precision)
-                        }
+        for annot in page.annots() or []:
+            content = annot.info.get("content", "")
+            if not content and hasattr(annot, "get_text"):
+                try:
+                    content = annot.get_text()
+                except:
+                    pass
+            if content and content.strip():
+                rect = annot.rect
+                text_data = {
+                    "text": content.strip(),
+                    "position": point_to_dict([rect.x0, rect.y0], precision),
+                    "bbox": rect_to_dict(rect, precision),
+                    "page_number": page_num + 1,
+                    "source": "annotation",
+                    "coordinates": {
+                        "x": round(rect.x0, precision),
+                        "y": round(rect.y0, precision),
+                        "center_x": round((rect.x0 + rect.x1) / 2, precision),
+                        "center_y": round((rect.y0 + rect.y1) / 2, precision)
                     }
-                    dim_info = extract_dimension_info(content)
-                    if dim_info["is_dimension"]:
-                        text_data["dimension_info"] = dim_info
-                    annotation_texts.append(text_data)
+                }
+                dim_info = extract_dimension_info(content)
+                if dim_info["is_dimension"]:
+                    text_data["dimension_info"] = dim_info
+                annotation_texts.append(text_data)
     except Exception as e:
         logger.warning(f"Failed to extract annotations: {e}")
     return annotation_texts
@@ -225,28 +225,27 @@ def extract_annotations(page: fitz.Page, page_num: int, precision: int = 2) -> L
 def extract_form_fields(page: fitz.Page, page_num: int, precision: int = 2) -> List[Dict]:
     fields = []
     try:
-        widgets = page.widgets()
-        if widgets:
-            for widget in widgets:
-                text = widget.field_value or widget.field_display or ""
-                if text and text.strip():
-                    field_data = {
-                        "text": text.strip(),
-                        "position": {"x": round(widget.rect.x0, precision), "y": round(widget.rect.y0, precision)},
-                        "bbox": rect_to_dict(widget.rect, precision),
-                        "page_number": page_num + 1,
-                        "source": "form_field",
-                        "coordinates": {
-                            "x": round(widget.rect.x0, precision),
-                            "y": round(widget.rect.y0, precision),
-                            "center_x": round((widget.rect.x0 + widget.rect.x1) / 2, precision),
-                            "center_y": round((widget.rect.y0 + widget.rect.y1) / 2, precision)
-                        }
+        widgets = page.widgets() or []
+        for widget in widgets:
+            text = widget.field_value or widget.field_display or ""
+            if text and text.strip():
+                field_data = {
+                    "text": text.strip(),
+                    "position": point_to_dict([widget.rect.x0, widget.rect.y0], precision),
+                    "bbox": rect_to_dict(widget.rect, precision),
+                    "page_number": page_num + 1,
+                    "source": "form_field",
+                    "coordinates": {
+                        "x": round(widget.rect.x0, precision),
+                        "y": round(widget.rect.y0, precision),
+                        "center_x": round((widget.rect.x0 + widget.rect.x1) / 2, precision),
+                        "center_y": round((widget.rect.y0 + widget.rect.y1) / 2, precision)
                     }
-                    dim_info = extract_dimension_info(text)
-                    if dim_info["is_dimension"]:
-                        field_data["dimension_info"] = dim_info
-                    fields.append(field_data)
+                }
+                dim_info = extract_dimension_info(text)
+                if dim_info["is_dimension"]:
+                    field_data["dimension_info"] = dim_info
+                fields.append(field_data)
     except Exception as e:
         logger.warning(f"Error extracting form fields: {e}")
     return fields
@@ -307,8 +306,8 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                     try:
                         if len(points) >= 4:
                             curve_points = [point_to_dict(p, precision) for p in points[:4]]
-                            center_x = sum(p["x"] for p in curve_points) / len(curve_points)
-                            center_y = sum(p["y"] for p in curve_points) / len(curve_points)
+                            center_x = np.mean([p["x"] for p in curve_points])
+                            center_y = np.mean([p["y"] for p in curve_points])
                             curve_data = {
                                 "type": "bezier",
                                 "points": curve_points,
@@ -319,6 +318,7 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                                 },
                                 **path_info
                             }
+                            curves.append(curve_data)
                         else:
                             center = point_to_dict(points[0], precision)
                             radius = float(points[1]) if len(points) > 1 and points[1] is not None else 1.0
@@ -337,13 +337,13 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                                 },
                                 **path_info
                             }
-                        curves.append(curve_data)
+                            curves.append(curve_data)
                     except Exception as e:
                         logger.warning(f"Error processing curve: {e}")
                 elif item_type == "qu" and len(points) >= 3:
                     polygon_points = [point_to_dict(p, precision) for p in points]
-                    center_x = sum(p["x"] for p in polygon_points) / len(polygon_points)
-                    center_y = sum(p["y"] for p in polygon_points) / len(polygon_points)
+                    center_x = np.mean([p["x"] for p in polygon_points])
+                    center_y = np.mean([p["y"] for p in polygon_points])
                     polygon_data = {
                         "type": "polygon",
                         "points": polygon_points,
@@ -410,14 +410,18 @@ def calculate_coordinate_bounds(data: Dict) -> Dict[str, Any]:
                     all_x_coords.append(vertex["x"])
                     all_y_coords.append(vertex["y"])
     if all_x_coords and all_y_coords:
+        min_x = min(all_x_coords)
+        max_x = max(all_x_coords)
+        min_y = min(all_y_coords)
+        max_y = max(all_y_coords)
         return {
             "coordinate_bounds": {
-                "min_x": round(min(all_x_coords), 2),
-                "max_x": round(max(all_x_coords), 2),
-                "min_y": round(min(all_y_coords), 2),
-                "max_y": round(max(all_y_coords), 2),
-                "width": round(max(all_x_coords) - min(all_x_coords), 2),
-                "height": round(max(all_y_coords) - min(all_y_coords), 2),
+                "min_x": round(min_x, 2),
+                "max_x": round(max_x, 2),
+                "min_y": round(min_y, 2),
+                "max_y": round(max_y, 2),
+                "width": round(max_x - min_x, 2),
+                "height": round(max_y - min_y, 2),
                 "total_elements": len(all_x_coords)
             }
         }
@@ -601,8 +605,7 @@ async def root():
             "coordinates": "All elements now include x,y coordinates for filter API",
             "pdf_dimensions": "Real PDF dimensions in points, pixels, and millimeters",
             "page_dimensions": "Individual page dimensions for each page",
-            "coordinate_bounds": "Actual min/max X,Y coordinates from extracted data",
-            "page_size": "Consistent page_size field for each page"
+            "coordinate_bounds": "Actual min/max X,Y coordinates from extracted data"
         },
         "coordinate_fields": {
             "texts": "coordinates.x, coordinates.y, coordinates.center_x, coordinates.center_y",

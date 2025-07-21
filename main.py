@@ -9,7 +9,6 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 import fitz  # PyMuPDF
-from PIL import Image
 import numpy as np
 
 # Configure logging
@@ -23,19 +22,77 @@ MIN_LINE_LENGTH = 0.1
 
 app = FastAPI(
     title="Merged Extraction API",
-    description="Extracts all text and vector data from technical drawings with minification",
+    description="Extracts all text and vector data from technical drawings with minification and coordinate info",
     version="1.0.0",
 )
 
 # Add GZip middleware for automatic compression if client supports it
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Shared utility functions
+class MyPdfModel:
+    """Enhanced PDF model that calculates real dimensions and coordinate systems"""
+    
+    def __init__(self, pdf_document: fitz.Document):
+        self.pdf_document = pdf_document
+        self.page_dimensions = self._calculate_page_dimensions()
+        self.total_dimensions = self._calculate_total_dimensions()
+    
+    def _calculate_page_dimensions(self) -> List[Dict]:
+        """Calculate dimensions for each page"""
+        return [
+            {
+                "page_number": page_num + 1,
+                "dimensions_points": {
+                    "width": round(page.rect.width, 2),
+                    "height": round(page.rect.height, 2),
+                    "x0": round(page.rect.x0, 2),
+                    "y0": round(page.rect.y0, 2),
+                    "x1": round(page.rect.x1, 2),
+                    "y1": round(page.rect.y1, 2)
+                },
+                "dimensions_pixels": {
+                    "width": int((page.rect.width * 150) / 72),
+                    "height": int((page.rect.height * 150) / 72),
+                    "dpi": 150
+                },
+                "dimensions_mm": {
+                    "width": round(page.rect.width * 0.352778, 2),
+                    "height": round(page.rect.height * 0.352778, 2)
+                }
+            }
+            for page_num, page in enumerate(self.pdf_document)
+        ]
+    
+    def _calculate_total_dimensions(self) -> Dict:
+        """Calculate total PDF dimensions"""
+        if not self.page_dimensions:
+            return {}
+        
+        total_width_points = sum(p["dimensions_points"]["width"] for p in self.page_dimensions)
+        total_height_points = sum(p["dimensions_points"]["height"] for p in self.page_dimensions)
+        max_width_points = max(p["dimensions_points"]["width"] for p in self.page_dimensions)
+        max_height_points = max(p["dimensions_points"]["height"] for p in self.page_dimensions)
+        
+        return {
+            "total_pages": len(self.page_dimensions),
+            "total_width_points": round(total_width_points, 2),
+            "total_height_points": round(total_height_points, 2),
+            "max_width_points": round(max_width_points, 2),
+            "max_height_points": round(max_height_points, 2),
+            "total_width_pixels": int((total_width_points * 150) / 72),
+            "total_height_pixels": int((total_height_points * 150) / 72),
+            "max_width_pixels": int((max_width_points * 150) / 72),
+            "max_height_pixels": int((max_height_points * 150) / 72),
+            "total_width_mm": round(total_width_points * 0.352778, 2),
+            "total_height_mm": round(total_height_points * 0.352778, 2),
+            "max_width_mm": round(max_width_points * 0.352778, 2),
+            "max_height_mm": round(max_height_points * 0.352778, 2)
+        }
+
+# Shared utility functions (unchanged)
 def point_to_dict(p, precision: int = 2) -> dict:
-    """Convert point to dictionary with configurable precision"""
     if p is None:
         return {"x": 0.0, "y": 0.0}
-    
     try:
         if hasattr(p, 'x') and hasattr(p, 'y'):
             return {"x": round(float(p.x), precision), "y": round(float(p.y), precision)}
@@ -47,14 +104,8 @@ def point_to_dict(p, precision: int = 2) -> dict:
         return {"x": 0.0, "y": 0.0}
 
 def rect_to_dict(r, precision: int = 2) -> dict:
-    """Convert rectangle to dictionary with configurable precision"""
     if r is None:
-        return {
-            "x0": 0.0, "y0": 0.0,
-            "x1": 0.0, "y1": 0.0,
-            "width": 0.0, "height": 0.0
-        }
-    
+        return {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0, "width": 0.0, "height": 0.0}
     try:
         if isinstance(r, tuple) and len(r) >= 4:
             return {
@@ -75,26 +126,15 @@ def rect_to_dict(r, precision: int = 2) -> dict:
                 "height": round(float(r.height), precision)
             }
         else:
-            return {
-                "x0": 0.0, "y0": 0.0,
-                "x1": 0.0, "y1": 0.0,
-                "width": 0.0, "height": 0.0
-            }
+            return {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0, "width": 0.0, "height": 0.0}
     except (ValueError, TypeError, AttributeError):
-        return {
-            "x0": 0.0, "y0": 0.0,
-            "x1": 0.0, "y1": 0.0,
-            "width": 0.0, "height": 0.0
-        }
+        return {"x0": 0.0, "y0": 0.0, "x1": 0.0, "y1": 0.0, "width": 0.0, "height": 0.0}
 
 def distance(p1: dict, p2: dict) -> float:
-    """Calculate distance between two points"""
     return math.sqrt((p2['x'] - p1['x'])**2 + (p2['y'] - p1['y'])**2)
 
 def extract_dimension_info(text: str) -> Dict[str, Any]:
-    """Extract dimension information from text"""
     dimension_data = {"is_dimension": False, "value": None, "unit": None, "type": None}
-    
     patterns = [
         (r'^(\d+)$', 'numeric'),
         (r'(\d+(?:\.\d+)?)\s*(mm|cm|m|ft|in|")', 'measurement'),
@@ -105,7 +145,6 @@ def extract_dimension_info(text: str) -> Dict[str, Any]:
         (r'(\d+)\s*:\s*(\d+)', 'scale'),
         (r'±\s*(\d+(?:\.\d+)?)', 'tolerance'),
     ]
-    
     for pattern, dim_type in patterns:
         match = re.search(pattern, text.strip())
         if match:
@@ -115,11 +154,9 @@ def extract_dimension_info(text: str) -> Dict[str, Any]:
             if len(match.groups()) > 1:
                 dimension_data["unit"] = match.group(2)
             break
-    
     return dimension_data
 
 def extract_path_data(path: dict, precision: int = 2) -> Dict[str, Any]:
-    """Extract path data with configurable precision"""
     width = path.get("width", 1.0)
     if width is None:
         width = 1.0
@@ -176,7 +213,14 @@ def extract_embedded_text(page: fitz.Page, page_num: int, precision: int = 2) ->
                                 },
                                 "bbox": rect_to_dict(bbox, precision),
                                 "page_number": page_num + 1,
-                                "source": "embedded"
+                                "source": "embedded",
+                                # NEW: Add coordinates for filter API
+                                "coordinates": {
+                                    "x": round(bbox[0], precision),
+                                    "y": round(bbox[1], precision),
+                                    "center_x": round((bbox[0] + bbox[2]) / 2, precision),
+                                    "center_y": round((bbox[1] + bbox[3]) / 2, precision)
+                                }
                             }
                             
                             # Add dimension info if detected
@@ -216,7 +260,14 @@ def extract_annotations(page: fitz.Page, page_num: int, precision: int = 2) -> L
                         },
                         "bbox": rect_to_dict(rect, precision),
                         "page_number": page_num + 1,
-                        "source": "annotation"
+                        "source": "annotation",
+                        # NEW: Add coordinates for filter API
+                        "coordinates": {
+                            "x": round(rect.x0, precision),
+                            "y": round(rect.y0, precision),
+                            "center_x": round((rect.x0 + rect.x1) / 2, precision),
+                            "center_y": round((rect.y0 + rect.y1) / 2, precision)
+                        }
                     }
                     
                     # Add dimension info if detected
@@ -249,7 +300,14 @@ def extract_form_fields(page: fitz.Page, page_num: int, precision: int = 2) -> L
                         },
                         "bbox": rect_to_dict(widget.rect, precision),
                         "page_number": page_num + 1,
-                        "source": "form_field"
+                        "source": "form_field",
+                        # NEW: Add coordinates for filter API
+                        "coordinates": {
+                            "x": round(widget.rect.x0, precision),
+                            "y": round(widget.rect.y0, precision),
+                            "center_x": round((widget.rect.x0 + widget.rect.x1) / 2, precision),
+                            "center_y": round((widget.rect.y0 + widget.rect.y1) / 2, precision)
+                        }
                     }
                     
                     # Add dimension info if detected
@@ -290,6 +348,15 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                             "p1": p1,
                             "p2": p2,
                             "length": round(line_length, precision),
+                            # NEW: Add coordinates for filter API
+                            "coordinates": {
+                                "start_x": p1["x"],
+                                "start_y": p1["y"],
+                                "end_x": p2["x"],
+                                "end_y": p2["y"],
+                                "center_x": round((p1["x"] + p2["x"]) / 2, precision),
+                                "center_y": round((p1["y"] + p2["y"]) / 2, precision)
+                            },
                             **path_info
                         }
                         lines.append(line_data)
@@ -302,6 +369,15 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                             "type": "rectangle",
                             "rect": rect,
                             "area": round(rect_area, precision),
+                            # NEW: Add coordinates for filter API
+                            "coordinates": {
+                                "x": rect["x0"],
+                                "y": rect["y0"],
+                                "center_x": round((rect["x0"] + rect["x1"]) / 2, precision),
+                                "center_y": round((rect["y0"] + rect["y1"]) / 2, precision),
+                                "width": rect["width"],
+                                "height": rect["height"]
+                            },
                             **path_info
                         }
                         rectangles.append(rect_data)
@@ -309,11 +385,21 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                 elif item_type == "c" and points:  # Curve/Circle
                     try:
                         if len(points) >= 4:
+                            curve_points = [point_to_dict(p, precision) for p in points[:4]]
+                            center_x = sum(p["x"] for p in curve_points) / len(curve_points)
+                            center_y = sum(p["y"] for p in curve_points) / len(curve_points)
                             curve_data = {
                                 "type": "bezier",
-                                "points": [point_to_dict(p, precision) for p in points[:4]],
+                                "points": curve_points,
+                                # NEW: Add coordinates for filter API
+                                "coordinates": {
+                                    "center_x": round(center_x, precision),
+                                    "center_y": round(center_y, precision),
+                                    "control_points": curve_points
+                                },
                                 **path_info
                             }
+                            curves.append(curve_data)
                         else:
                             center = point_to_dict(points[0], precision)
                             radius = 1.0
@@ -326,16 +412,36 @@ def extract_vector_data(page: fitz.Page, precision: int = 2) -> Dict[str, List]:
                                 "type": "circle",
                                 "center": center,
                                 "radius": round(radius, precision),
+                                # NEW: Add coordinates for filter API
+                                "coordinates": {
+                                    "center_x": center["x"],
+                                    "center_y": center["y"],
+                                    "radius": round(radius, precision),
+                                    "bounds_x0": round(center["x"] - radius, precision),
+                                    "bounds_y0": round(center["y"] - radius, precision),
+                                    "bounds_x1": round(center["x"] + radius, precision),
+                                    "bounds_y1": round(center["y"] + radius, precision)
+                                },
                                 **path_info
                             }
-                        curves.append(curve_data)
+                            curves.append(curve_data)
                     except Exception as e:
                         logger.warning(f"Error processing curve: {e}")
                 
                 elif item_type == "qu" and len(points) >= 3:  # Polygon
+                    polygon_points = [point_to_dict(p, precision) for p in points]
+                    center_x = sum(p["x"] for p in polygon_points) / len(polygon_points)
+                    center_y = sum(p["y"] for p in polygon_points) / len(polygon_points)
                     polygon_data = {
                         "type": "polygon",
-                        "points": [point_to_dict(p, precision) for p in points],
+                        "points": polygon_points,
+                        # NEW: Add coordinates for filter API
+                        "coordinates": {
+                            "center_x": round(center_x, precision),
+                            "center_y": round(center_y, precision),
+                            "vertices": polygon_points,
+                            "vertex_count": len(polygon_points)
+                        },
                         **path_info
                     }
                     polygons.append(polygon_data)
@@ -394,7 +500,7 @@ def minify_output(data: Dict, minify: bool = True, remove_non_essential: bool = 
                 "subject": output_data["metadata"].get("subject", ""),
                 "keywords": output_data["metadata"].get("keywords", ""),
                 "creator": output_data["metadata"].get("creator", ""),
-                "producer": output_data["metadata"].get("producer", "")
+                "producer": output_data["metadata"].get("producer", ""),
                 # Skip creation_date and modification_date to save space
             }
             output_data["metadata"] = essential_metadata
@@ -530,10 +636,6 @@ async def extract_all(
             # Build page data
             page_data = {
                 "page_number": page_num + 1,
-                "page_size": {
-                    "width": round(page.rect.width, precision),
-                    "height": round(page.rect.height, precision)
-                },
                 "texts": unique_texts,
                 "drawings": vector_data,
                 "processing_time_ms": int((time.time() - page_start) * 1000)

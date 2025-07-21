@@ -516,6 +516,85 @@ def deduplicate_texts(texts: List[Dict], tolerance: float = 10.0) -> List[Dict]:
     
     return unique_texts
 
+def calculate_coordinate_bounds(data: Dict) -> Dict[str, Any]:
+    """Calculate actual min/max coordinates from extracted data"""
+    all_x_coords = []
+    all_y_coords = []
+    
+    for page in data.get("pages", []):
+        # Collect coordinates from texts
+        for text in page.get("texts", []):
+            if "coordinates" in text:
+                all_x_coords.extend([text["coordinates"]["x"], text["coordinates"]["center_x"]])
+                all_y_coords.extend([text["coordinates"]["y"], text["coordinates"]["center_y"]])
+            # Also from bbox
+            if "bbox" in text:
+                bbox = text["bbox"]
+                all_x_coords.extend([bbox["x0"], bbox["x1"]])
+                all_y_coords.extend([bbox["y0"], bbox["y1"]])
+        
+        # Collect coordinates from drawings
+        drawings = page.get("drawings", {})
+        
+        # Lines
+        for line in drawings.get("lines", []):
+            if "coordinates" in line:
+                coords = line["coordinates"]
+                all_x_coords.extend([coords["start_x"], coords["end_x"], coords["center_x"]])
+                all_y_coords.extend([coords["start_y"], coords["end_y"], coords["center_y"]])
+        
+        # Rectangles
+        for rect in drawings.get("rectangles", []):
+            if "coordinates" in rect:
+                coords = rect["coordinates"]
+                all_x_coords.extend([coords["x"], coords["center_x"], coords["x"] + coords["width"]])
+                all_y_coords.extend([coords["y"], coords["center_y"], coords["y"] + coords["height"]])
+        
+        # Curves/Circles
+        for curve in drawings.get("curves", []):
+            if "coordinates" in curve:
+                coords = curve["coordinates"]
+                all_x_coords.append(coords["center_x"])
+                all_y_coords.append(coords["center_y"])
+                if "bounds_x0" in coords:
+                    all_x_coords.extend([coords["bounds_x0"], coords["bounds_x1"]])
+                    all_y_coords.extend([coords["bounds_y0"], coords["bounds_y1"]])
+        
+        # Polygons
+        for polygon in drawings.get("polygons", []):
+            if "coordinates" in polygon:
+                coords = polygon["coordinates"]
+                all_x_coords.append(coords["center_x"])
+                all_y_coords.append(coords["center_y"])
+                for vertex in coords.get("vertices", []):
+                    all_x_coords.append(vertex["x"])
+                    all_y_coords.append(vertex["y"])
+    
+    if all_x_coords and all_y_coords:
+        return {
+            "coordinate_bounds": {
+                "min_x": round(min(all_x_coords), 2),
+                "max_x": round(max(all_x_coords), 2),
+                "min_y": round(min(all_y_coords), 2),
+                "max_y": round(max(all_y_coords), 2),
+                "width": round(max(all_x_coords) - min(all_x_coords), 2),
+                "height": round(max(all_y_coords) - min(all_y_coords), 2),
+                "total_elements": len(all_x_coords)
+            }
+        }
+    else:
+        return {
+            "coordinate_bounds": {
+                "min_x": 0.0,
+                "max_x": 0.0,
+                "min_y": 0.0,
+                "max_y": 0.0,
+                "width": 0.0,
+                "height": 0.0,
+                "total_elements": 0
+            }
+        }
+
 def minify_output(data: Dict, minify: bool = True, remove_non_essential: bool = True) -> str:
     """
     Minify JSON output to a single-line string, removing all whitespace.
@@ -553,10 +632,12 @@ def minify_output(data: Dict, minify: bool = True, remove_non_essential: bool = 
             }
             output_data["metadata"] = essential_metadata
         
-        # Remove processing times from summary
+        # Keep coordinate bounds in summary (important for filtering!)
         if "summary" in output_data:
+            # Remove processing times but keep coordinate bounds
             output_data["summary"].pop("processing_time_ms", None)
             output_data["summary"].pop("file_size_mb", None)
+            # Keep coordinate_bounds for filter API!
         
         # Remove non-essential fields from pages
         for page in output_data.get("pages", []):
@@ -720,9 +801,14 @@ async def extract_all(
         
         output["summary"]["processing_time_ms"] = int((time.time() - start_time) * 1000)
         
+        # NEW: Calculate actual coordinate bounds from extracted data
+        coordinate_bounds = calculate_coordinate_bounds(output)
+        output["summary"].update(coordinate_bounds)
+        
         logger.info(f"Extraction completed in {output['summary']['processing_time_ms']}ms")
         logger.info(f"Found {output['summary']['total_texts']} texts, {output['summary']['dimensions_found']} dimensions")
         logger.info(f"PDF total dimensions: {pdf_model.total_dimensions}")
+        logger.info(f"Actual coordinate bounds: {coordinate_bounds['coordinate_bounds']}")
         
         # Minify and filter output
         return minify_output(output, minify, remove_non_essential)
@@ -758,6 +844,7 @@ async def root():
             "coordinates": "All elements now include x,y coordinates for filter API",
             "pdf_dimensions": "Real PDF dimensions in points, pixels, and millimeters",
             "page_dimensions": "Individual page dimensions for each page",
+            "coordinate_bounds": "Actual min/max X,Y coordinates from extracted data",
             "filter_ready": "Output optimized for coordinate-based filtering"
         },
         "coordinate_fields": {
@@ -784,6 +871,11 @@ async def health_check():
         ]
     }
 
+if __name__ == "__main__":
+    import uvicorn
+    logger.info(f"Starting server on port {PORT}")
+    logger.info("Enhanced with coordinate information for filter API usage")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 if __name__ == "__main__":
     import uvicorn
     logger.info(f"Starting server on port {PORT}")

@@ -5,3 +5,4 @@ PyMuPDF==1.23.21
 pillow==10.2.0
 numpy==1.26.3
 python-multipart==0.0.6
+psutil==5.9.8
